@@ -10,6 +10,13 @@ website, with its own chats, artifacts, and login. Your main Muse chats stay
 in your main account, your sandbox chats stay in your sandbox account.
 The app only saves you the switching.
 
+## Screenshots
+
+![Tab bar with multiple AI accounts](image-255.png)
+![Muse Main tab](image-257.png)
+![Gemini tab](image-259.png)
+![Perplexity tab](image-261.png)
+
 ## Tabs included
 
 - Muse (Main) — muse.ai, main account
