@@ -36,16 +36,20 @@
 //
 // WATCHTOWER STATES (coarse but honest — no false precision):
 //   working   — the tab has had network activity running for over
-//               ~1.5s, or is loading a page. Short requests (pings,
+//               ~4s, or is loading a page. Short requests (pings,
 //               heartbeats) never trigger this.
-//   done      — it WAS working and the activity ended, and you have
-//               not looked at the tab yet. "Done — check it."
-//   idle      — quiet, and you have seen its latest state.
+//   done      — it WAS working for at least ~8s and the activity
+//               ended, and you have not looked at the tab yet.
+//               "Done — check it."
+//   idle      — quiet, and you have seen its latest state. Short
+//               bursts that never looked like real work land here.
 //   unknown   — no activity observed yet (fresh tab, never loaded).
 //   attention — the page failed to load, crashed, or stopped
 //               responding, OR the site tried to send you a
 //               notification (an approval waiting, a reply ready).
-//               Cleared when you look at the tab.
+//               Never set on the tab you are looking at, and not
+//               re-lit within 90s of the last flag. Cleared when
+//               you look at the tab.
 // "Waiting on you" is only ever shown where an outside signal
 // supports it — a finished tab you have not viewed (done), an
 // error, or a notification attempt (attention). The app never
@@ -66,7 +70,9 @@ const DEFAULT_TABS = [
 const TABBAR_HEIGHT = 52;
 const SIDEBAR_WIDTH = 232;      // expanded Watchtower
 const SIDEBAR_COLLAPSED = 40;   // collapsed: status lights only
-const WORKING_AFTER_MS = 1500;  // a request must run this long to count as "working"
+const WORKING_AFTER_MS = 4000;  // a request must run this long to count as "working"
+const MIN_WORKING_FOR_DONE_MS = 8000;  // a burst must run this long to earn "Done"
+const ATTENTION_COOLDOWN_MS = 90000;  // do not re-light attention within this long
 
 let win = null;
 let tabbarView = null;
@@ -220,9 +226,10 @@ function switchTab(tabId) {
     win.contentView.addChildView(view);
   }
   activeTabId = tabId;
-  // Looking at a tab marks its finished work as seen.
+  // Looking at a tab marks its finished work — and anything it was
+  // flagging for attention — as seen.
   const activity = tabActivity.get(tabId);
-  if (activity && activity.state === 'done') {
+  if (activity && (activity.state === 'done' || activity.state === 'attention')) {
     activity.state = 'idle';
   }
   layout();
@@ -302,7 +309,7 @@ const hookedSessions = new Set(); // partitions already being watched
 function activityFor(tabId) {
   let a = tabActivity.get(tabId);
   if (!a) {
-    a = { state: 'unknown', inflight: 0, timer: null, loadedOnce: false, lastActivity: null, lastStartAt: null, lastDoneAt: null };
+    a = { state: 'unknown', inflight: 0, timer: null, loadedOnce: false, lastActivity: null, lastStartAt: null, lastDoneAt: null, workingSince: null, lastAttentionAt: null };
     tabActivity.set(tabId, a);
   }
   return a;
@@ -312,6 +319,7 @@ function setState(tabId, state) {
   const a = activityFor(tabId);
   if (a.state === state) return;
   a.state = state;
+  if (state === 'working') a.workingSince = Date.now();
   sendWatchtowerUpdate();
 }
 
@@ -370,8 +378,29 @@ function noteRequestEnd(tabId) {
       clearTimeout(a.timer);
       a.timer = null;
     }
-    if (a.state === 'working') setDone(tabId);
+    if (a.state === 'working') {
+      // A short burst (a background poll that ran just over the
+      // working threshold) is chatter, not finished work: drop it
+      // to Idle instead of flashing "Done — check it".
+      const workedMs = a.workingSince ? Date.now() - a.workingSince : 0;
+      if (workedMs >= MIN_WORKING_FOR_DONE_MS) setDone(tabId);
+      else setState(tabId, 'idle');
+    }
   }
+}
+
+// A site tried to notify you (approval waiting, reply ready). That is
+// an honest outside signal — but sites check this permission over and
+// over, so without guards one approval would light the row forever:
+// never flag the tab you are already looking at, and do not re-light
+// a tab within 90s of the last flag.
+function noteNotificationAttempt(tabId) {
+  if (tabId === activeTabId) return;
+  const a = activityFor(tabId);
+  const now = Date.now();
+  if (a.lastAttentionAt && now - a.lastAttentionAt < ATTENTION_COOLDOWN_MS) return;
+  a.lastAttentionAt = now;
+  setState(tabId, 'attention');
 }
 
 // Watch one tab session's network traffic. Each partition is hooked
@@ -403,7 +432,7 @@ function hookSession(tab) {
   // notification from any tab, including the site's own.
   ses.setPermissionRequestHandler((webContents, permission, callback) => {
     if (permission === 'notifications') {
-      setState(tab.id, 'attention');
+      noteNotificationAttempt(tab.id);
       callback(settings.alertsEnabled);
     } else {
       callback(true);
@@ -411,7 +440,7 @@ function hookSession(tab) {
   });
   ses.setPermissionCheckHandler((webContents, permission) => {
     if (permission === 'notifications') {
-      setState(tab.id, 'attention');
+      noteNotificationAttempt(tab.id);
       return settings.alertsEnabled;
     }
     return true;

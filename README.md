@@ -179,6 +179,22 @@ Viewing the tab clears the red row. Caveat: a site that merely
 checks notification permission can flash the row once — viewing
 the tab clears it.
 
+### v2.0.4 — attention that sticks, and tabs flickering Working
+
+Two Watchtower bugs from Nov 10: a tab stayed "Needs attention"
+long after its approval was handled, and Gemini/Perplexity kept
+flipping in and out of Working. Causes: (1) viewing a tab only
+cleared Done, never attention — and every notification-permission
+check re-lit it, even on the tab being viewed; (2) background
+polls running just over the 1.5s threshold flipped Working, then
+Done, on every poll. Fixes: attention is never set on the tab
+you're looking at, clears when you look at a tab, and won't
+re-light within 90s; Working now needs ~4s of activity, and a
+burst only earns "Done" if it ran ~8s or more — short bursts
+drop to Idle. A genuinely quick answer on a background tab may
+show Idle instead of Done; that is the trade for killing the
+flicker.
+
 ## Updating from v1.3 to v2.0
 
 Close the app, unzip the new version over your existing folder, and
