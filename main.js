@@ -299,7 +299,7 @@ const hookedSessions = new Set(); // partitions already being watched
 function activityFor(tabId) {
   let a = tabActivity.get(tabId);
   if (!a) {
-    a = { state: 'unknown', inflight: 0, timer: null, loadedOnce: false, lastActivity: null, lastDoneAt: null };
+    a = { state: 'unknown', inflight: 0, timer: null, loadedOnce: false, lastActivity: null, lastStartAt: null, lastDoneAt: null };
     tabActivity.set(tabId, a);
   }
   return a;
@@ -312,7 +312,7 @@ function setState(tabId, state) {
   sendWatchtowerUpdate();
 }
 
-function setDone(tabId) {
+function setDone(tabId, quiet) {
   const a = activityFor(tabId);
   a.lastDoneAt = Date.now();
   a.lastActivity = Date.now();
@@ -324,7 +324,9 @@ function setDone(tabId) {
   setState(tabId, 'done');
   // Alert: row highlight (the done state) + one Windows notification.
   // No chat content ever goes in it — just the tab's name.
-  if (settings.alertsEnabled && Notification.isSupported()) {
+  // quiet = true skips the notification (used by the staleness
+  // sweeper: nothing actually finished, so don't cry wolf).
+  if (!quiet && settings.alertsEnabled && Notification.isSupported()) {
     const tab = allTabs().find((t) => t.id === tabId);
     const note = new Notification({
       title: 'Multi-AI Tabs',
@@ -347,6 +349,7 @@ function noteRequestStart(tabId) {
   const a = activityFor(tabId);
   a.inflight += 1;
   a.lastActivity = Date.now();
+  a.lastStartAt = Date.now();
   if (!a.loadedOnce || a.state === 'working' || a.timer) return;
   a.timer = setTimeout(() => {
     a.timer = null;
@@ -411,6 +414,31 @@ function sendWatchtowerUpdate() {
   });
 }
 
+// Some tabs keep one background connection open forever (a live
+// stream that never closes). Without this, that connection holds
+// "Working" forever even when nothing is happening. Every 5s, any
+// tab that has shown Working for over ~15s with no NEW request
+// starting is dropped back to Done/Idle — quietly, with no
+// notification, because nothing actually finished. A real answer
+// finishing still alerts normally through noteRequestEnd.
+const WORKING_STALE_MS = 15000;
+
+function startWatchtowerSweeper() {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [tabId, a] of tabActivity) {
+      if (a.state === 'working' && a.lastStartAt && now - a.lastStartAt > WORKING_STALE_MS) {
+        a.inflight = 0;
+        if (a.timer) {
+          clearTimeout(a.timer);
+          a.timer = null;
+        }
+        setDone(tabId, true);
+      }
+    }
+  }, 5000);
+}
+
 // ---------------------------------------------------------------- tab view
 function createTabView(tab) {
   hookSession(tab);
@@ -462,6 +490,7 @@ function createTabView(tab) {
 // ------------------------------------------------------------------ window
 function createWindow() {
   settings = loadSettings();
+  startWatchtowerSweeper();
   customTabs = loadCustomTabs();
 
   win = new BrowserWindow({

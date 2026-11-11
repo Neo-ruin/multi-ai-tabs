@@ -150,6 +150,17 @@ never any chat text). Click the notification to jump to the tab.
 Turn alerts off with the checkbox at the bottom of the sidebar —
 off stays off.
 
+### v2.0.1 fix — tabs stuck on "Working"
+
+Some tabs (Gemini, Perplexity) keep one background connection open
+forever, and v2.0 counted that as "Working" forever. v2.0.1 drops a
+tab back to Done once it has shown Working for ~15 seconds with no
+new activity — quietly, with no notification, because nothing
+actually finished. A real answer finishing still alerts normally.
+If a tab flips to Done while it is still answering, or sticks on
+Working again, the 15-second limit is one number in main.js
+(`WORKING_STALE_MS`) and can be tuned.
+
 ## Updating from v1.3 to v2.0
 
 Close the app, unzip the new version over your existing folder, and
