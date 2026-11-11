@@ -312,7 +312,7 @@ function setState(tabId, state) {
   sendWatchtowerUpdate();
 }
 
-function setDone(tabId, quiet) {
+function setDone(tabId) {
   const a = activityFor(tabId);
   a.lastDoneAt = Date.now();
   a.lastActivity = Date.now();
@@ -324,9 +324,7 @@ function setDone(tabId, quiet) {
   setState(tabId, 'done');
   // Alert: row highlight (the done state) + one Windows notification.
   // No chat content ever goes in it — just the tab's name.
-  // quiet = true skips the notification (used by the staleness
-  // sweeper: nothing actually finished, so don't cry wolf).
-  if (!quiet && settings.alertsEnabled && Notification.isSupported()) {
+  if (settings.alertsEnabled && Notification.isSupported()) {
     const tab = allTabs().find((t) => t.id === tabId);
     const note = new Notification({
       title: 'Multi-AI Tabs',
@@ -418,9 +416,10 @@ function sendWatchtowerUpdate() {
 // stream that never closes). Without this, that connection holds
 // "Working" forever even when nothing is happening. Every 5s, any
 // tab that has shown Working for over ~15s with no NEW request
-// starting is dropped back to Done/Idle — quietly, with no
-// notification, because nothing actually finished. A real answer
-// finishing still alerts normally through noteRequestEnd.
+// starting is dropped back to Idle — NOT Done. "Done — check it"
+// is reserved for a real finish (a request burst actually
+// completing); a connection merely going quiet means nothing
+// finished, so Idle is the honest label.
 const WORKING_STALE_MS = 15000;
 
 function startWatchtowerSweeper() {
@@ -433,7 +432,7 @@ function startWatchtowerSweeper() {
           clearTimeout(a.timer);
           a.timer = null;
         }
-        setDone(tabId, true);
+        setState(tabId, 'idle');
       }
     }
   }, 5000);

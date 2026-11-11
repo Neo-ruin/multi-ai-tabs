@@ -154,12 +154,18 @@ off stays off.
 
 Some tabs (Gemini, Perplexity) keep one background connection open
 forever, and v2.0 counted that as "Working" forever. v2.0.1 drops a
-tab back to Done once it has shown Working for ~15 seconds with no
-new activity — quietly, with no notification, because nothing
-actually finished. A real answer finishing still alerts normally.
-If a tab flips to Done while it is still answering, or sticks on
-Working again, the 15-second limit is one number in main.js
+tab back once it has shown Working for ~15 seconds with no new
+activity. A real answer finishing still alerts normally.
+If a tab flips while it is still answering, or sticks on Working
+again, the 15-second limit is one number in main.js
 (`WORKING_STALE_MS`) and can be tuned.
+
+### v2.0.2 fix — sweeper wrongly said "Done"
+
+v2.0.1's sweeper dropped a quiet tab to "Done — check it", which
+reads as "your answer is ready" on a tab nobody used. v2.0.2
+drops it to Idle instead: "Done" is now reserved for a real
+finish (a request burst actually completing).
 
 ## Updating from v1.3 to v2.0
 
