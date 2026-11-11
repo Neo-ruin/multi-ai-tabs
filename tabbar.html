@@ -30,6 +30,7 @@
   <div id="tabs" style="display: flex; gap: 6px;"></div>
   <button id="addBtn" title="Add a tab">+ Add Tab</button>
   <div class="nav">
+    <button id="watchtower" title="Show or hide the Watchtower sidebar">Watchtower</button>
     <button id="back" title="Back">&#8592;</button>
     <button id="forward" title="Forward">&#8594;</button>
     <button id="reload" title="Reload">&#8635;</button>
@@ -104,6 +105,7 @@
     if (e.key === 'Enter') document.getElementById('addSubmit').click();
   });
   document.getElementById('back').addEventListener('click', function () { window.tabs.back(); });
+  document.getElementById('watchtower').addEventListener('click', function () { window.tabs.toggleSidebar(); });
   document.getElementById('forward').addEventListener('click', function () { window.tabs.forward(); });
   document.getElementById('reload').addEventListener('click', function () { window.tabs.reload(); });
 </script>

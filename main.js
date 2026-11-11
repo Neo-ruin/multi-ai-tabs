@@ -1,4 +1,18 @@
-// Multi-AI Tabs v1.1 — one window, one tab per AI account.
+// Multi-AI Tabs v2.0 — one window, one tab per AI account.
+//
+// v1: separate login partition per tab, click to switch, no incognito.
+// v2 adds two things, both local-only, no accounts, no telemetry:
+//   1. Right-click menus in every tab (Cut / Copy / Paste / Paste as
+//      plain text / spellcheck suggestions / image and link actions).
+//      Electron ships no right-click menu in a WebContentsView, and v1
+//      never built one — that is why right-click did nothing at all.
+//   2. The Watchtower: a collapsible sidebar showing one row per tab
+//      with an honest status light (Working / Done / Idle / Unknown /
+//      Needs attention). Status is observed WITHOUT injecting anything
+//      into the AI tabs — only what Electron already exposes from the
+//      main process (page loads, title changes, network activity on
+//      the tab's session, errors). The tabs stay exactly the services'
+//      normal websites, untouched.
 //
 // HOW IT WORKS (the important part):
 // Each tab runs in its own Electron session "partition" (persist:<name>).
@@ -19,8 +33,22 @@
 //   same name again later restores its old login. Removing a custom
 //   tab only hides it from the tab bar — its login data stays on
 //   disk until you add it back or delete the app data yourself.
+//
+// WATCHTOWER STATES (coarse but honest — no false precision):
+//   working   — the tab has had network activity running for over
+//               ~1.5s, or is loading a page. Short requests (pings,
+//               heartbeats) never trigger this.
+//   done      — it WAS working and the activity ended, and you have
+//               not looked at the tab yet. "Done — check it."
+//   idle      — quiet, and you have seen its latest state.
+//   unknown   — no activity observed yet (fresh tab, never loaded).
+//   attention — the page failed to load, crashed, or stopped
+//               responding. Cleared by a successful reload.
+// "Waiting on you" is only ever shown where an outside signal
+// supports it — a finished tab you have not viewed (done), or an
+// error (attention). The app never guesses at message contents.
 
-const { app, BrowserWindow, WebContentsView, ipcMain } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, Menu, MenuItem, Notification, clipboard, session } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -33,12 +61,46 @@ const DEFAULT_TABS = [
 ];
 
 const TABBAR_HEIGHT = 52;
+const SIDEBAR_WIDTH = 232;      // expanded Watchtower
+const SIDEBAR_COLLAPSED = 40;   // collapsed: status lights only
+const WORKING_AFTER_MS = 1500;  // a request must run this long to count as "working"
 
 let win = null;
 let tabbarView = null;
+let sidebarView = null;
 let activeTabId = null;
 const contentViews = new Map(); // tab id -> WebContentsView
 
+// ---------------------------------------------------------------- settings
+// Small JSON file next to custom-tabs.json. Alerts are ON by default
+// (Angelo's call); the off switch in the sidebar stays off once set.
+function settingsPath() {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+function loadSettings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
+    return {
+      sidebarCollapsed: parsed.sidebarCollapsed === true,
+      alertsEnabled: parsed.alertsEnabled !== false, // default ON
+    };
+  } catch {
+    return { sidebarCollapsed: false, alertsEnabled: true };
+  }
+}
+
+let settings = { sidebarCollapsed: false, alertsEnabled: true };
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+  } catch {
+    // Settings just don't stick this time; the app keeps working.
+  }
+}
+
+// ---------------------------------------------------------------- tabs list
 function customTabsPath() {
   return path.join(app.getPath('userData'), 'custom-tabs.json');
 }
@@ -81,13 +143,58 @@ function slugify(label) {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'tab';
 }
 
+// Add a custom tab from a name + URL. Shared by the + Add Tab form and
+// by "Open link in new tab" in the right-click menu. Returns the tab,
+// or null when the URL is not usable.
+function addCustomTab(label, url) {
+  const cleanLabel = String(label || '').trim();
+  let cleanUrl = String(url || '').trim();
+  if (!cleanLabel || !cleanUrl) return null;
+  if (!/^https?:\/\//i.test(cleanUrl)) cleanUrl = 'https://' + cleanUrl;
+  let parsed;
+  try {
+    parsed = new URL(cleanUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:') return null;
+  const id = 'custom-' + slugify(cleanLabel);
+  const existing = allTabs().find((t) => t.id === id);
+  if (existing) return existing; // already there: just switch to it
+  const tab = { id, label: cleanLabel, url: parsed.toString(), partition: 'persist:' + id, custom: true };
+  customTabs.push(tab);
+  saveCustomTabs(customTabs);
+  sendTabsList();
+  return tab;
+}
+
+function openLinkInNewTab(url) {
+  let label = 'Link';
+  try {
+    label = new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    // keep the fallback label
+  }
+  const tab = addCustomTab(label, url);
+  if (tab) switchTab(tab.id);
+}
+
+// ---------------------------------------------------------------- layout
+function sidebarWidth() {
+  return settings.sidebarCollapsed ? SIDEBAR_COLLAPSED : SIDEBAR_WIDTH;
+}
+
 function layout() {
   if (!win) return;
   const bounds = win.getContentBounds();
   if (tabbarView) tabbarView.setBounds({ x: 0, y: 0, width: bounds.width, height: TABBAR_HEIGHT });
+  const sw = sidebarWidth();
+  if (sidebarView) {
+    sidebarView.setBounds({ x: 0, y: TABBAR_HEIGHT, width: sw, height: bounds.height - TABBAR_HEIGHT });
+  }
   const active = contentViews.get(activeTabId);
   if (active) {
-    active.setBounds({ x: 0, y: TABBAR_HEIGHT, width: bounds.width, height: bounds.height - TABBAR_HEIGHT });
+    active.setBounds({ x: sw, y: TABBAR_HEIGHT, width: bounds.width - sw, height: bounds.height - TABBAR_HEIGHT });
   }
 }
 
@@ -102,16 +209,7 @@ function switchTab(tabId) {
 
   let view = contentViews.get(tabId);
   if (!view) {
-    view = new WebContentsView({
-      webPreferences: {
-        partition: tab.partition,
-        contextIsolation: true,
-        sandbox: true,
-        // No preload, no Node in the AI tabs on purpose: the tab is
-        // just that service's normal website, nothing else.
-      },
-    });
-    view.webContents.loadURL(tab.url);
+    view = createTabView(tab);
     contentViews.set(tabId, view);
   }
 
@@ -119,11 +217,251 @@ function switchTab(tabId) {
     win.contentView.addChildView(view);
   }
   activeTabId = tabId;
+  // Looking at a tab marks its finished work as seen.
+  const activity = tabActivity.get(tabId);
+  if (activity && activity.state === 'done') {
+    activity.state = 'idle';
+  }
   layout();
   if (tabbarView) tabbarView.webContents.send('active-tab', tabId);
+  sendWatchtowerUpdate();
 }
 
+// ------------------------------------------------------- right-click menu
+// Electron ships NO right-click menu in a WebContentsView. This builds
+// one from what was clicked. Where the website itself implements a
+// custom menu, the page wins and this never fires — that is the
+// browser's own rule, not ours.
+function showContextMenu(wc, params) {
+  const template = [];
+  const edit = params.editFlags || {};
+
+  // Spellcheck first: suggestions for the red-underlined word, then
+  // Add to dictionary (saved in the app data, survives restarts).
+  if (params.misspelledWord) {
+    const suggestions = params.dictionarySuggestions || [];
+    suggestions.slice(0, 5).forEach((word) => {
+      template.push({
+        label: word,
+        click: () => wc.replaceMisspelling(word),
+      });
+    });
+    if (suggestions.length) template.push({ type: 'separator' });
+    template.push({
+      label: 'Add to dictionary',
+      click: () => wc.session.addWordToSpellCheckerDictionary(params.misspelledWord),
+    });
+    template.push({ type: 'separator' });
+  }
+
+  if (params.isEditable) {
+    template.push({ label: 'Cut', role: 'cut', enabled: !!edit.canCut });
+    template.push({ label: 'Copy', role: 'copy', enabled: !!edit.canCopy });
+    // Paste covers text AND images: Chromium pastes whatever the
+    // clipboard holds into the focused box. This is the fix for
+    // pasting text or a picture into a chat box.
+    template.push({ label: 'Paste', role: 'paste', enabled: !!edit.canPaste });
+    template.push({ label: 'Paste as plain text', role: 'pasteAndMatchStyle', enabled: !!edit.canPaste });
+    template.push({ label: 'Select all', role: 'selectAll', enabled: !!edit.canSelectAll });
+  } else if (params.selectionText) {
+    template.push({ label: 'Copy', role: 'copy', enabled: !!edit.canCopy });
+  }
+
+  if (params.linkURL) {
+    template.push({ type: 'separator' });
+    template.push({ label: 'Open link in new tab', click: () => openLinkInNewTab(params.linkURL) });
+    template.push({ label: 'Copy link address', click: () => clipboard.writeText(params.linkURL) });
+  }
+
+  if (params.mediaType === 'image' && params.srcURL) {
+    template.push({ type: 'separator' });
+    template.push({ label: 'Copy image', click: () => wc.copyImageAt(params.x, params.y) });
+    template.push({ label: 'Save image as…', click: () => wc.downloadURL(params.srcURL) });
+    template.push({ label: 'Open image in new tab', click: () => openLinkInNewTab(params.srcURL) });
+  }
+
+  template.push({ type: 'separator' });
+  template.push({ label: 'Back', enabled: wc.canGoBack(), click: () => wc.goBack() });
+  template.push({ label: 'Forward', enabled: wc.canGoForward(), click: () => wc.goForward() });
+  template.push({ label: 'Reload', click: () => wc.reload() });
+  template.push({ type: 'separator' });
+  template.push({ label: 'Inspect element', click: () => wc.inspectElement(params.x, params.y) });
+
+  Menu.buildFromTemplate(template).popup({ window: win });
+}
+
+// ------------------------------------------------------------- watchtower
+// Per-tab activity, observed from the main process only. No code is
+// ever injected into the AI tabs.
+const tabActivity = new Map(); // tab id -> { state, inflight, timer, loadedOnce, lastActivity, lastDoneAt }
+const hookedSessions = new Set(); // partitions already being watched
+
+function activityFor(tabId) {
+  let a = tabActivity.get(tabId);
+  if (!a) {
+    a = { state: 'unknown', inflight: 0, timer: null, loadedOnce: false, lastActivity: null, lastDoneAt: null };
+    tabActivity.set(tabId, a);
+  }
+  return a;
+}
+
+function setState(tabId, state) {
+  const a = activityFor(tabId);
+  if (a.state === state) return;
+  a.state = state;
+  sendWatchtowerUpdate();
+}
+
+function setDone(tabId) {
+  const a = activityFor(tabId);
+  a.lastDoneAt = Date.now();
+  a.lastActivity = Date.now();
+  if (tabId === activeTabId) {
+    // You are watching it finish: nothing pending.
+    setState(tabId, 'idle');
+    return;
+  }
+  setState(tabId, 'done');
+  // Alert: row highlight (the done state) + one Windows notification.
+  // No chat content ever goes in it — just the tab's name.
+  if (settings.alertsEnabled && Notification.isSupported()) {
+    const tab = allTabs().find((t) => t.id === tabId);
+    const note = new Notification({
+      title: 'Multi-AI Tabs',
+      body: (tab ? tab.label : 'A tab') + ' finished — check it',
+      silent: true,
+    });
+    note.on('click', () => {
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.focus();
+      }
+      switchTab(tabId);
+    });
+    note.show();
+  }
+}
+
+// A request started on this tab's session.
+function noteRequestStart(tabId) {
+  const a = activityFor(tabId);
+  a.inflight += 1;
+  a.lastActivity = Date.now();
+  if (!a.loadedOnce || a.state === 'working' || a.timer) return;
+  a.timer = setTimeout(() => {
+    a.timer = null;
+    if (a.inflight > 0 && a.loadedOnce && a.state !== 'working') {
+      setState(tabId, 'working');
+    }
+  }, WORKING_AFTER_MS);
+}
+
+// A request finished (or failed) on this tab's session.
+function noteRequestEnd(tabId) {
+  const a = activityFor(tabId);
+  a.inflight = Math.max(0, a.inflight - 1);
+  a.lastActivity = Date.now();
+  if (a.inflight === 0) {
+    if (a.timer) {
+      clearTimeout(a.timer);
+      a.timer = null;
+    }
+    if (a.state === 'working') setDone(tabId);
+  }
+}
+
+// Watch one tab session's network traffic. Each partition is hooked
+// once. onResponseStarted needs no callback (unlike onBeforeRequest,
+// which would hang requests if the callback were missed), and it
+// stays open for the whole of a streaming answer — which is exactly
+// the signal "this tab is still generating".
+function hookSession(tab) {
+  if (hookedSessions.has(tab.partition)) return;
+  hookedSessions.add(tab.partition);
+  const ses = session.fromPartition(tab.partition);
+  // Spellcheck on, US English, for every tab's chat boxes.
+  try {
+    ses.setSpellCheckerEnabled(true);
+    ses.setSpellCheckerLanguages(['en-US']);
+  } catch {
+    // Older Electron or a failed language load: menus still work,
+    // suggestions just won't appear.
+  }
+  const filter = { urls: ['*://*/*'] };
+  ses.webRequest.onResponseStarted(filter, () => noteRequestStart(tab.id));
+  ses.webRequest.onCompleted(filter, () => noteRequestEnd(tab.id));
+  ses.webRequest.onErrorOccurred(filter, () => noteRequestEnd(tab.id));
+}
+
+function sendWatchtowerUpdate() {
+  if (!sidebarView) return;
+  sidebarView.webContents.send('watchtower-update', {
+    collapsed: settings.sidebarCollapsed,
+    alertsEnabled: settings.alertsEnabled,
+    activeTabId,
+    tabs: allTabs().map((tab) => {
+      const a = activityFor(tab.id);
+      return {
+        id: tab.id,
+        label: tab.label,
+        state: a.state,
+        lastActivity: a.lastActivity,
+      };
+    }),
+  });
+}
+
+// ---------------------------------------------------------------- tab view
+function createTabView(tab) {
+  hookSession(tab);
+  const view = new WebContentsView({
+    webPreferences: {
+      partition: tab.partition,
+      contextIsolation: true,
+      sandbox: true,
+      // No preload, no Node in the AI tabs on purpose: the tab is
+      // just that service's normal website, nothing else.
+      // Spellcheck is enabled per-session in hookSession, above.
+    },
+  });
+  const wc = view.webContents;
+  const a = activityFor(tab.id);
+
+  wc.on('context-menu', (_event, params) => showContextMenu(wc, params));
+
+  // Page loads: first load ends as idle (nothing generated yet);
+  // a later navigation counts as working until it settles.
+  wc.on('did-start-loading', () => {
+    if (a.loadedOnce && a.state !== 'working') setState(tab.id, 'working');
+  });
+  wc.on('did-stop-loading', () => {
+    if (a.loadedOnce && a.state === 'working' && a.inflight === 0) setDone(tab.id);
+  });
+  wc.on('did-finish-load', () => {
+    const first = !a.loadedOnce;
+    a.loadedOnce = true;
+    if (first && a.state === 'unknown') setState(tab.id, 'idle');
+  });
+  // A title change after load is usually a fresh chat title landing
+  // while an answer streams in — count it as recent activity.
+  wc.on('page-title-updated', () => {
+    if (a.loadedOnce) a.lastActivity = Date.now();
+  });
+  // Errors are the one "needs attention" the app can know for sure.
+  wc.on('did-fail-load', () => setState(tab.id, 'attention'));
+  wc.on('crashed', () => setState(tab.id, 'attention'));
+  wc.on('unresponsive', () => setState(tab.id, 'attention'));
+  wc.on('responsive', () => {
+    if (a.state === 'attention') setState(tab.id, 'idle');
+  });
+
+  wc.loadURL(tab.url);
+  return view;
+}
+
+// ------------------------------------------------------------------ window
 function createWindow() {
+  settings = loadSettings();
   customTabs = loadCustomTabs();
 
   win = new BrowserWindow({
@@ -145,38 +483,34 @@ function createWindow() {
   });
   win.contentView.addChildView(tabbarView);
   tabbarView.webContents.loadFile(path.join(__dirname, 'tabbar.html'));
+  tabbarView.webContents.on('context-menu', (_event, params) => {
+    showContextMenu(tabbarView.webContents, params);
+  });
+
+  // The Watchtower sidebar: its own view, its own tiny preload.
+  // It only ever shows tab names, states, and times — never content.
+  sidebarView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-watchtower.js'),
+      contextIsolation: true,
+    },
+  });
+  win.contentView.addChildView(sidebarView);
+  sidebarView.webContents.loadFile(path.join(__dirname, 'sidebar.html'));
+  sidebarView.webContents.on('context-menu', (_event, params) => {
+    showContextMenu(sidebarView.webContents, params);
+  });
+  sidebarView.webContents.on('did-finish-load', () => sendWatchtowerUpdate());
 
   ipcMain.on('switch-tab', (_event, tabId) => switchTab(tabId));
 
   ipcMain.on('add-tab', (event, { label, url }) => {
-    const cleanLabel = String(label || '').trim();
-    let cleanUrl = String(url || '').trim();
-    if (!cleanLabel || !cleanUrl) {
-      event.sender.send('add-tab-error', 'Give the tab a name and a website address.');
+    const tab = addCustomTab(label, url);
+    if (!tab) {
+      event.sender.send('add-tab-error', 'Give the tab a name and a valid https:// website address.');
       return;
     }
-    if (!/^https?:\/\//i.test(cleanUrl)) cleanUrl = 'https://' + cleanUrl;
-    let parsed;
-    try {
-      parsed = new URL(cleanUrl);
-    } catch {
-      event.sender.send('add-tab-error', 'That website address does not look valid.');
-      return;
-    }
-    if (parsed.protocol !== 'https:') {
-      event.sender.send('add-tab-error', 'Use an https:// address so your login stays secure.');
-      return;
-    }
-    const id = 'custom-' + slugify(cleanLabel);
-    if (allTabs().some((t) => t.id === id)) {
-      event.sender.send('add-tab-error', 'A tab with that name already exists. Pick a different name.');
-      return;
-    }
-    const tab = { id, label: cleanLabel, url: parsed.toString(), partition: 'persist:' + id, custom: true };
-    customTabs.push(tab);
-    saveCustomTabs(customTabs);
-    sendTabsList();
-    switchTab(id);
+    switchTab(tab.id);
   });
 
   ipcMain.on('remove-tab', (_event, tabId) => {
@@ -187,9 +521,14 @@ function createWindow() {
     const view = contentViews.get(tabId);
     if (view) {
       win.contentView.removeChildView(view);
+      view.webContents.destroy();
       contentViews.delete(tabId);
     }
+    const a = tabActivity.get(tabId);
+    if (a && a.timer) clearTimeout(a.timer);
+    tabActivity.delete(tabId);
     sendTabsList();
+    sendWatchtowerUpdate();
     if (activeTabId === tabId) switchTab(allTabs()[0].id);
     // Note: the tab's login data stays on disk under its partition,
     // so adding a tab with the same name again restores its login.
@@ -208,6 +547,19 @@ function createWindow() {
     if (view && view.webContents.canGoForward()) view.webContents.goForward();
   });
 
+  ipcMain.on('toggle-sidebar', () => {
+    settings.sidebarCollapsed = !settings.sidebarCollapsed;
+    saveSettings();
+    layout();
+    sendWatchtowerUpdate();
+  });
+  ipcMain.on('toggle-alerts', () => {
+    settings.alertsEnabled = !settings.alertsEnabled;
+    saveSettings();
+    sendWatchtowerUpdate();
+  });
+  ipcMain.on('watchtower-jump', (_event, tabId) => switchTab(tabId));
+
   tabbarView.webContents.on('did-finish-load', () => {
     sendTabsList();
     switchTab(allTabs()[0].id);
@@ -217,6 +569,7 @@ function createWindow() {
   win.on('closed', () => {
     win = null;
     tabbarView = null;
+    sidebarView = null;
     activeTabId = null;
     contentViews.clear();
   });

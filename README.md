@@ -109,6 +109,57 @@ the `DEFAULT_TABS` list in `main.js` — see "Adding another tab" below.
 The + Add Tab button is just the easier way, and the one to tell other
 people about.
 
+## What's new in v2.0 — right-click menus, spellcheck, and the Watchtower
+
+**Right-click now works everywhere.** v1 never built a right-click
+menu, so right-clicking did nothing at all — no paste, no spellcheck.
+v2 adds a full menu in every tab, in the tab bar, and in the sidebar:
+
+- In a chat box: Cut, Copy, **Paste**, Paste as plain text, Select all.
+  Paste handles text **and** pictures — copy an image, right-click the
+  chat box, Paste, and it goes in.
+- On a misspelled word (red underline): suggestions at the top, then
+  **Add to dictionary**. Words you add stay learned across restarts.
+  Spellcheck is US English, on in every tab.
+- On a link: Open link in new tab, Copy link address.
+- On an image: Copy image, Save image as…, Open image in new tab.
+- Anywhere: Back, Forward, Reload, Inspect element.
+
+One honest note: if a website has its own custom right-click menu,
+that site's menu wins and ours doesn't appear. That's the browser's
+own rule, not a bug.
+
+**The Watchtower.** A collapsible sidebar on the left shows one row
+per tab with a status light — Working (gold, pulsing), Done — check
+it (green), Idle, No activity yet, or Needs attention (red, for a
+failed load or a crash). Click any row to jump straight to that tab.
+The **Watchtower** button in the top bar (or the ‹ button in the
+sidebar) collapses it to a narrow strip of lights; it remembers
+your choice.
+
+How it knows, and what it doesn't: status is observed from outside
+the tab only — page loads, title changes, and network activity on
+that tab's session. **No code is injected into the AI tabs**, and
+the Watchtower never sees message contents. A request has to run
+for over ~1.5 seconds to count as "Working", so quick pings and
+heartbeats don't set it off. "Done" means it was working, the
+activity ended, and you haven't looked at the tab yet. Alerts are
+**on by default**: a finished background tab highlights its row and
+shows one Windows notification ("Muse (Main) finished — check it",
+never any chat text). Click the notification to jump to the tab.
+Turn alerts off with the checkbox at the bottom of the sidebar —
+off stays off.
+
+## Updating from v1.3 to v2.0
+
+Close the app, unzip the new version over your existing folder, and
+choose Replace when Windows asks about the files with the same names.
+Your logins are safe: the built-in tabs kept their exact names and
+login sessions, so they stay signed in. You do NOT need to run
+`npm install` again (no new dependencies were added) — just run
+`npm.cmd start` as usual. To rebuild the installer/portable exe,
+run `npm.cmd run dist` again as in v1.2/v1.3.
+
 ## Updating from v1.0 to v1.1
 
 Close the app, unzip the new version over your existing folder, and
@@ -151,3 +202,4 @@ will forget its login and you'll have to sign in again.
   use each service's website normally, by hand, inside its tab.
 - Keep this folder private — anyone with access to your PC and this
   app's data could open your signed-in tabs.
+

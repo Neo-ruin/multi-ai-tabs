@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Watchtower</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #141414; color: #eee; display: flex; flex-direction: column; overflow: hidden; }
+  #head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #2a2a2a; flex: none; }
+  #head h1 { font-size: 13px; margin: 0; letter-spacing: 0.08em; text-transform: uppercase; color: #c9a227; flex: 1; white-space: nowrap; overflow: hidden; }
+  #collapseBtn { border: 1px solid #333; background: #1e1e1e; color: #ddd; border-radius: 6px; width: 26px; height: 26px; cursor: pointer; font-size: 14px; line-height: 1; flex: none; }
+  #collapseBtn:hover { background: #2a2a2a; }
+  #rows { flex: 1; overflow-y: auto; padding: 6px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+  .row:hover { background: #1e1e1e; }
+  .row.active { background: #232323; border-color: #333; }
+  .row.done { border-color: #2f6b3a; background: #1a2a1e; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; flex: none; background: #555; }
+  .dot.working { background: #c9a227; animation: pulse 1.2s ease-in-out infinite; }
+  .dot.done { background: #4caf6d; }
+  .dot.idle { background: #555; }
+  .dot.unknown { background: transparent; border: 2px solid #555; width: 9px; height: 9px; }
+  .dot.attention { background: #e05252; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .info { flex: 1; min-width: 0; }
+  .label { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .state { font-size: 12px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row.done .state { color: #7fd39a; }
+  .row.attention .state { color: #ff9a9a; }
+  .when { font-size: 11px; color: #777; flex: none; }
+  #foot { flex: none; border-top: 1px solid #2a2a2a; padding: 10px 12px; font-size: 12px; color: #aaa; }
+  #foot label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  #foot .hint { margin-top: 8px; line-height: 1.5; }
+  /* Collapsed: a narrow strip of lights only. */
+  body.collapsed #head h1, body.collapsed .info, body.collapsed .when, body.collapsed #foot { display: none; }
+  body.collapsed #head { justify-content: center; padding: 10px 0; }
+  body.collapsed .row { justify-content: center; padding: 10px 0; }
+</style>
+</head>
+<body>
+<div id="head">
+  <h1>Watchtower</h1>
+  <button id="collapseBtn" title="Collapse the sidebar">&#8249;</button>
+</div>
+<div id="rows"></div>
+<div id="foot">
+  <label><input type="checkbox" id="alertsToggle"> Alerts on</label>
+  <div class="hint">Status is observed from outside the tab — loading, network activity, errors. Never message contents.</div>
+</div>
+<script>
+  var rowsEl = document.getElementById('rows');
+  var alertsToggle = document.getElementById('alertsToggle');
+  var collapseBtn = document.getElementById('collapseBtn');
+  var lastData = null;
+
+  var STATE_TEXT = {
+    working: 'Working…',
+    done: 'Done — check it',
+    idle: 'Idle',
+    unknown: 'No activity yet',
+    attention: 'Needs attention'
+  };
+
+  function timeAgo(ts) {
+    if (!ts) return '—';
+    var s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 10) return 'just now';
+    if (s < 60) return s + 's ago';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h / 24) + 'd ago';
+  }
+
+  function render(data) {
+    lastData = data;
+    document.body.classList.toggle('collapsed', !!data.collapsed);
+    collapseBtn.innerHTML = data.collapsed ? '&#8250;' : '&#8249;';
+    collapseBtn.title = data.collapsed ? 'Expand the sidebar' : 'Collapse the sidebar';
+    alertsToggle.checked = !!data.alertsEnabled;
+    rowsEl.innerHTML = '';
+    data.tabs.forEach(function (tab) {
+      var row = document.createElement('div');
+      row.className = 'row' + (tab.id === data.activeTabId ? ' active' : '') + (tab.state === 'done' ? ' done' : '') + (tab.state === 'attention' ? ' attention' : '');
+      row.title = tab.label + ' — ' + (STATE_TEXT[tab.state] || tab.state) + '. Click to jump to this tab.';
+      var dot = document.createElement('span');
+      dot.className = 'dot ' + tab.state;
+      row.appendChild(dot);
+      var info = document.createElement('div');
+      info.className = 'info';
+      var label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = tab.label;
+      var state = document.createElement('div');
+      state.className = 'state';
+      state.textContent = STATE_TEXT[tab.state] || tab.state;
+      info.appendChild(label);
+      info.appendChild(state);
+      row.appendChild(info);
+      var when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = timeAgo(tab.lastActivity);
+      row.appendChild(when);
+      row.addEventListener('click', function () { window.watchtower.jump(tab.id); });
+      rowsEl.appendChild(row);
+    });
+  }
+
+  // Keep the "Xm ago" times fresh without waiting for a status change.
+  setInterval(function () {
+    if (lastData) render(lastData);
+  }, 30000);
+
+  window.watchtower.onUpdate(render);
+  collapseBtn.addEventListener('click', function () { window.watchtower.toggleSidebar(); });
+  alertsToggle.addEventListener('change', function () { window.watchtower.toggleAlerts(); });
+</script>
+</body>
+</html>

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('tabs', {
   onActive: (callback) => ipcRenderer.on('active-tab', (_event, tabId) => callback(tabId)),
   onAddError: (callback) => ipcRenderer.on('add-tab-error', (_event, message) => callback(message)),
   switchTo: (tabId) => ipcRenderer.send('switch-tab', tabId),
+  toggleSidebar: () => ipcRenderer.send('toggle-sidebar'),
   add: (label, url) => ipcRenderer.send('add-tab', { label, url }),
   remove: (tabId) => ipcRenderer.send('remove-tab', tabId),
   reload: () => ipcRenderer.send('reload-tab'),
