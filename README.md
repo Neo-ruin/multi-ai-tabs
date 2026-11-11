@@ -167,6 +167,18 @@ reads as "your answer is ready" on a tab nobody used. v2.0.2
 drops it to Idle instead: "Done" is now reserved for a real
 finish (a request burst actually completing).
 
+### v2.0.3 — "Needs attention" for approvals, and Alerts off means off
+
+Two gaps found Nov 10: a tab waiting on an approval stayed Idle,
+and a site's own notification popped up even with Alerts off.
+v2.0.3 uses the notification permission ask as the signal — the
+moment a site tries to notify you, its row goes red ("Needs
+attention"). The Alerts switch now gates the popup itself too:
+off means no notification from any tab, including the site's own.
+Viewing the tab clears the red row. Caveat: a site that merely
+checks notification permission can flash the row once — viewing
+the tab clears it.
+
 ## Updating from v1.3 to v2.0
 
 Close the app, unzip the new version over your existing folder, and

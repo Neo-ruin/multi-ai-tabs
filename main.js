@@ -43,10 +43,13 @@
 //   idle      — quiet, and you have seen its latest state.
 //   unknown   — no activity observed yet (fresh tab, never loaded).
 //   attention — the page failed to load, crashed, or stopped
-//               responding. Cleared by a successful reload.
+//               responding, OR the site tried to send you a
+//               notification (an approval waiting, a reply ready).
+//               Cleared when you look at the tab.
 // "Waiting on you" is only ever shown where an outside signal
-// supports it — a finished tab you have not viewed (done), or an
-// error (attention). The app never guesses at message contents.
+// supports it — a finished tab you have not viewed (done), an
+// error, or a notification attempt (attention). The app never
+// guesses at message contents.
 
 const { app, BrowserWindow, WebContentsView, ipcMain, Menu, MenuItem, Notification, clipboard, session } = require('electron');
 const fs = require('fs');
@@ -392,6 +395,27 @@ function hookSession(tab) {
   ses.webRequest.onResponseStarted(filter, () => noteRequestStart(tab.id));
   ses.webRequest.onCompleted(filter, () => noteRequestEnd(tab.id));
   ses.webRequest.onErrorOccurred(filter, () => noteRequestEnd(tab.id));
+  // Notifications: the moment a site tries to notify you (an approval
+  // waiting, a reply ready), Electron asks the app first. That ask is
+  // an honest outside signal that the tab needs you — so the row goes
+  // red ("Needs attention"), still without injecting anything into
+  // the page. The Alerts switch gates the popup itself: off means no
+  // notification from any tab, including the site's own.
+  ses.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'notifications') {
+      setState(tab.id, 'attention');
+      callback(settings.alertsEnabled);
+    } else {
+      callback(true);
+    }
+  });
+  ses.setPermissionCheckHandler((webContents, permission) => {
+    if (permission === 'notifications') {
+      setState(tab.id, 'attention');
+      return settings.alertsEnabled;
+    }
+    return true;
+  });
 }
 
 function sendWatchtowerUpdate() {
